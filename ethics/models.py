@@ -1,35 +1,8 @@
+from django.core.exceptions import ValidationError
 from django.db import models
 from django.contrib.auth.models import User
 from users.models import Supervisor
 
-class HumanParticipants(models.Model):
-    vulnerable_persons = models.BooleanField(default=False)
-    under_18 = models.BooleanField(default=False)
-    patients = models.BooleanField(default=False)
-    staff = models.BooleanField(default=False)
-
-    @classmethod
-    def get_default(cls):
-        obj, created = cls.objects.get_or_create(id=1)  # Ensure a default object exists
-        return obj.pk
-
-    def __str__(self):
-        return f"Human Participants: {self.vulnerable_persons}, {self.under_18}, {self.patients}, {self.staff}"
-
-class SubjectMatter(models.Model):
-    sensitive_issues = models.BooleanField(default=False)
-    illegal_activities = models.BooleanField(default=False)
-    self_respect_risk = models.BooleanField(default=False)
-
-    @classmethod
-    def get_default(cls):
-        obj, created = cls.objects.get_or_create(id=1)  # Ensure a default object exists
-        return obj.pk
-
-    def __str__(self):
-        return f"Subject Matter: {self.sensitive_issues}, {self.illegal_activities}, {self.self_respect_risk}"
-
-# Ethical Approval Status Choices
 class EthicalApprovalStatus(models.TextChoices):
     PENDING = 'Pending', 'Pending'
     UNDER_REVIEW = 'Under Review', 'Under Review'
@@ -38,8 +11,6 @@ class EthicalApprovalStatus(models.TextChoices):
     MINOR_CLARIFICATIONS = 'Minor Clarifications', 'Minor Clarifications'
     REJECTED = 'Rejected', 'Rejected'
 
-
-# Ethics Form Model
 class EthicsForm(models.Model):
     clarifications = models.TextField()
     application_title = models.CharField(max_length=255)
@@ -53,29 +24,42 @@ class EthicsForm(models.Model):
     end_date = models.DateField()
     declaration_date = models.DateField()
 
-    # Foreign key references to human participants and subject matter
-    human_participants = models.ForeignKey(
-        HumanParticipants, on_delete=models.CASCADE, default=HumanParticipants.get_default
-    )
-    subject_matter = models.ForeignKey(
-        SubjectMatter, on_delete=models.CASCADE, default=SubjectMatter.get_default
-    )
-    # Supervisor as a Foreign Key to Supervisor model
+    # JSON Fields
+    human_participants = models.JSONField(default=dict)
+    subject_matter = models.JSONField(default=dict)
+
     supervisor = models.ForeignKey(Supervisor, on_delete=models.CASCADE)
 
-    # Ethics decision and approval tracking fields
     approval_status = models.CharField(
         max_length=20,
         choices=EthicalApprovalStatus.choices,
         default=EthicalApprovalStatus.PENDING
     )
 
-    def __str__(self):
-        return f"Ethics Form: {self.application_title} - {self.application_number}"
+    def clean(self):
+        """Validate JSON Fields before saving"""
+        expected_human_keys = {"vulnerable_persons", "under_18", "patients", "staff"}
+        expected_subject_keys = {"sensitive_issues", "illegal_activities", "self_respect_risk"}
+
+        # Validate human_participants
+        if not isinstance(self.human_participants, dict):
+            raise ValidationError({"human_participants": "Invalid format. Expected a JSON object."})
+        if set(self.human_participants.keys()) != expected_human_keys:
+            raise ValidationError({"human_participants": f"Missing or extra fields. Expected {expected_human_keys}."})
+        if not all(isinstance(value, bool) for value in self.human_participants.values()):
+            raise ValidationError({"human_participants": "All values must be boolean (true/false)."})
+
+        # Validate subject_matter
+        if not isinstance(self.subject_matter, dict):
+            raise ValidationError({"subject_matter": "Invalid format. Expected a JSON object."})
+        if set(self.subject_matter.keys()) != expected_subject_keys:
+            raise ValidationError({"subject_matter": f"Missing or extra fields. Expected {expected_subject_keys}."})
+        if not all(isinstance(value, bool) for value in self.subject_matter.values()):
+            raise ValidationError({"subject_matter": "All values must be boolean (true/false)."})
 
     def save(self, *args, **kwargs):
+        self.full_clean()  # Validate before saving
         super().save(*args, **kwargs)
-        from .tasks import notify_reviewer
 
-        # After saving the EthicsForm, trigger the task to notify the reviewer
+        from .tasks import notify_reviewer
         notify_reviewer.apply_async(args=[self.id])
